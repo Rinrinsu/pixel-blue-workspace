@@ -1,0 +1,19 @@
+.vw-root[data-vw-theme="obsidian"] {
+  --vw-accent: var(--interactive-accent);
+  --vw-accent-strong: var(--interactive-accent);
+  --vw-accent-soft: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  --vw-ink: var(--text-normal);
+  --vw-muted: var(--text-muted);
+  --vw-line: var(--background-modifier-border);
+  --vw-canvas: var(--background-primary);
+  --vw-paper: var(--background-primary);
+  --vw-panel: var(--background-secondary);
+  --vw-surface: var(--background-primary);
+  --vw-shadow: var(--shadow-s);
+  --vw-radius: var(--radius-m);
+  background: var(--background-primary);
+}
+
+.vw-root[data-vw-theme="obsidian"] .vw-theme-ornament {
+  display: none;
+}

@@ -1,0 +1,89 @@
+.vw-root {
+  /* Stable UI contract. Themes override semantic appearance tokens only. */
+  --vw-font-display: 34px;
+  --vw-font-page-title: 28px;
+  --vw-font-title: 18px;
+  --vw-font-card-title: 15px;
+  --vw-font-body: 14px;
+  --vw-font-label: 12px;
+  --vw-font-caption: 11px;
+  --vw-space-1: 4px;
+  --vw-space-2: 8px;
+  --vw-space-3: 12px;
+  --vw-space-4: 16px;
+  --vw-space-5: 20px;
+  --vw-space-6: 24px;
+  --vw-space-7: 32px;
+  --vw-icon-sm: 16px;
+  --vw-icon-md: 20px;
+  --vw-icon-lg: 38px;
+  --vw-control-height: 34px;
+  --vw-content-width: 1280px;
+  --vw-gap: var(--vw-space-4);
+
+  /* Safe fallbacks used when a theme package is incomplete. */
+  --vw-accent: var(--interactive-accent);
+  --vw-accent-strong: var(--interactive-accent);
+  --vw-accent-soft: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  --vw-ink: var(--text-normal);
+  --vw-muted: var(--text-muted);
+  --vw-state-todo: var(--text-muted);
+  --vw-state-doing: var(--interactive-accent);
+  --vw-state-done: var(--color-green);
+  --vw-state-overdue: var(--text-error);
+  --vw-line: var(--background-modifier-border);
+  --vw-canvas: var(--background-primary);
+  --vw-paper: var(--background-primary);
+  --vw-panel: var(--background-secondary);
+  --vw-surface: var(--background-primary);
+  --vw-shadow: none;
+  --vw-radius: var(--radius-m);
+
+  position: relative;
+  isolation: isolate;
+  container-name: vw-app;
+  container-type: inline-size;
+  min-width: 0;
+  max-width: var(--vw-content-width);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: var(--vw-space-7);
+  overflow-x: hidden;
+  color: var(--vw-ink);
+  background-color: var(--vw-canvas);
+  font-size: var(--vw-font-body);
+  line-height: 1.5;
+}
+
+.vw-root *,
+.vw-root *::before,
+.vw-root *::after {
+  box-sizing: border-box;
+}
+
+.vw-root h1,
+.vw-root h2,
+.vw-root h3,
+.vw-root h4,
+.vw-root h5,
+.vw-root h6,
+.vw-root p,
+.vw-root button,
+.vw-root a,
+.vw-root label,
+.vw-root strong,
+.vw-root small {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.vw-root img,
+.vw-root video,
+.vw-root canvas {
+  max-width: 100%;
+}
+
+@media (max-width: 650px) {
+  .vw-root { padding: 14px; }
+}

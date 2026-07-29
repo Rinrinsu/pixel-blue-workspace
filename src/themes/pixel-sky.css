@@ -1,0 +1,218 @@
+.vw-root[data-vw-theme="pixel-sky"] {
+  --vw-radius: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--vw-accent) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--vw-accent) 7%, transparent) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.vw-root[data-vw-theme="pixel-sky"][data-vw-color-scheme="light"] {
+  color-scheme: light;
+  --vw-accent: #8dc7f4;
+  --vw-accent-strong: #2f78ad;
+  --vw-accent-soft: #dceeff;
+  --vw-ink: #18344d;
+  --vw-muted: #587791;
+  --vw-state-todo: #6b7f91;
+  --vw-state-doing: #2f78ad;
+  --vw-state-done: #2f8f64;
+  --vw-state-overdue: #c34444;
+  --vw-line: #aacbe4;
+  --vw-canvas: #f3f8fe;
+  --vw-paper: #fbfdff;
+  --vw-panel: #e8f3fd;
+  --vw-surface: #f0f7fd;
+  --vw-paper-grid: rgb(69 137 188 / 10%);
+  --vw-paper-rule: rgb(69 137 188 / 12%);
+  --vw-paper-dot: rgb(47 120 173 / 16%);
+  --vw-sticky: #f1f8ff;
+  --vw-shadow: 7px 7px 0 rgb(88 156 207 / 15%);
+}
+
+.vw-root[data-vw-theme="pixel-sky"][data-vw-color-scheme="dark"] {
+  color-scheme: dark;
+  --vw-accent: #78bcef;
+  --vw-accent-strong: #91d2ff;
+  --vw-accent-soft: rgb(120 188 239 / 18%);
+  --vw-ink: #eaf6ff;
+  --vw-muted: #a1bfd6;
+  --vw-state-todo: #a1bfd6;
+  --vw-state-doing: #91d2ff;
+  --vw-state-done: #6fd19a;
+  --vw-state-overdue: #ff8d8d;
+  --vw-line: #365d7a;
+  --vw-canvas: #0f1c2a;
+  --vw-paper: #16283a;
+  --vw-panel: #1b3045;
+  --vw-surface: #20394f;
+  --vw-paper-grid: rgb(145 210 255 / 8%);
+  --vw-paper-rule: rgb(145 210 255 / 10%);
+  --vw-paper-dot: rgb(145 210 255 / 16%);
+  --vw-sticky: #1c3449;
+  --vw-shadow: 7px 7px 0 rgb(3 10 18 / 38%);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-header,
+.vw-root[data-vw-theme="pixel-sky"] .vw-page-heading.has-banner,
+.vw-root[data-vw-theme="pixel-sky"] .vw-section,
+.vw-root[data-vw-theme="pixel-sky"] .vw-inspiration-card,
+.vw-root[data-vw-theme="pixel-sky"] .vw-inspiration-empty {
+  background-color: var(--vw-paper);
+  background-image:
+    linear-gradient(var(--vw-paper-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--vw-paper-grid) 1px, transparent 1px);
+  background-position: -1px -1px;
+  background-size: 16px 16px;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-stat {
+  background-color: var(--vw-panel);
+  background-image: radial-gradient(
+    circle,
+    var(--vw-paper-dot) 1px,
+    transparent 1.2px
+  );
+  background-position: 4px 4px;
+  background-size: 12px 12px;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-task {
+  background-color: var(--vw-sticky);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0 20px,
+    var(--vw-paper-rule) 20px 21px
+  );
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-header::before,
+.vw-root[data-vw-theme="pixel-sky"] .vw-page-heading.has-banner::before,
+.vw-root[data-vw-theme="pixel-sky"] .vw-section::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border: 1px dashed color-mix(in srgb, var(--vw-accent-strong) 22%, transparent);
+  pointer-events: none;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape {
+  position: absolute;
+  display: none;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-hero-collage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  filter: drop-shadow(5px 6px 0 color-mix(in srgb, var(--vw-accent) 13%, transparent));
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape.is-paper {
+  width: 86px;
+  height: 108px;
+  border: 1px solid var(--vw-line);
+  background: var(--vw-paper);
+  box-shadow: 5px 6px 0 color-mix(in srgb, var(--vw-accent) 18%, transparent);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape.is-paper::after {
+  content: "";
+  position: absolute;
+  inset: 13px;
+  background: repeating-linear-gradient(to bottom, transparent 0 9px, var(--vw-line) 10px 11px);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape.is-back {
+  top: 17px;
+  right: 67px;
+  transform: rotate(-10deg);
+  opacity: .75;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape.is-front {
+  top: 28px;
+  right: 19px;
+  transform: rotate(7deg);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape.is-cloud {
+  top: 13px;
+  right: 117px;
+  width: 18px;
+  height: 18px;
+  background: var(--vw-accent);
+  box-shadow:
+    18px 0 var(--vw-accent),
+    36px 0 var(--vw-accent-soft),
+    0 18px var(--vw-accent-soft),
+    18px 18px var(--vw-accent),
+    54px 18px var(--vw-accent);
+  opacity: .7;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-theme-shape.is-tape {
+  z-index: 2;
+  top: 77px;
+  right: 5px;
+  padding: 4px 8px;
+  color: var(--vw-ink);
+  background: color-mix(in srgb, var(--vw-paper) 88%, transparent);
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  transform: rotate(-3deg);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-stat::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 15px;
+  height: 15px;
+  border-bottom: 1px solid var(--vw-line);
+  border-left: 1px solid var(--vw-line);
+  background: var(--vw-paper);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-stat-icon {
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--vw-accent) 24%, transparent);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-progress-bar {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--vw-accent-strong) 0 8px,
+    var(--vw-accent) 8px 10px
+  );
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-progress-bar.is-done {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--color-green) 0 8px,
+    color-mix(in srgb, var(--color-green) 55%, transparent) 8px 10px
+  );
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-timeline-item:not(:last-child)::after {
+  border-left-style: dashed;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-dot {
+  border-radius: 0;
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--vw-accent) 30%, transparent);
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-column {
+  border-style: dashed;
+}
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-task:nth-child(3n) { transform: rotate(.35deg); }
+.vw-root[data-vw-theme="pixel-sky"] .vw-task:nth-child(3n + 1) { transform: rotate(-.25deg); }
+
+.vw-root[data-vw-theme="pixel-sky"] .vw-task:hover {
+  box-shadow: 5px 5px 0 color-mix(in srgb, var(--vw-accent) 28%, transparent);
+  transform: translate(-1px, -1px) rotate(0);
+}
