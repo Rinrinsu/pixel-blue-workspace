@@ -224,7 +224,7 @@ class ConfirmActionModal extends Modal {
         .setButtonText("取消")
         .onClick(() => this.close()))
       .addButton((button) => button
-        .setDestructive()
+        .setWarning()
         .setButtonText("确认")
         .onClick(() => {
           this.settled = true;

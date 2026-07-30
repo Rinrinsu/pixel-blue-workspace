@@ -317,7 +317,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
                 .onClick(async () => {
                   this.plugin.settings.ai.codexThreadId = "";
                   await this.plugin.saveSettings();
-                  this.update();
+                  this.refreshSettings();
                   this.plugin.refreshOpenViews();
                 }));
             }
@@ -460,7 +460,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
                   await this.plugin.saveSettings();
                   this.plugin.applyThemeToOpenViews();
                   this.plugin.applyGlobalTheme();
-                  this.update();
+                  this.refreshSettings();
                 }));
             }
           },
@@ -490,7 +490,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
                   this.plugin.settings.navigation = createDefaultNavigation();
                   await this.plugin.saveSettings();
                   this.plugin.refreshOpenViews();
-                  this.update();
+                  this.refreshSettings();
                 }));
             }
           }
@@ -656,7 +656,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
             .setButtonText("清除")
             .onClick(() => {
               this.app.secretStorage.setSecret(secretId, "");
-              this.update();
+              this.refreshSettings();
             }))
           .addButton((button) => button
             .setButtonText("测试连接")
@@ -742,7 +742,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
     }
     this.plugin.refreshOpenViews();
     if (key === "aiProvider" || key === "customColorsEnabled") {
-      this.update();
+      this.refreshSettings();
     }
   }
 
