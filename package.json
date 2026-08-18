@@ -1,6 +1,6 @@
 {
   "name": "pixel-blue-workspace",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A pixel-blue visual workspace for notes, projects, tasks, daily notes, and knowledge workflows.",
   "main": "main.js",
   "scripts": {
@@ -11,10 +11,12 @@
     "test:bridge": "node tools/codex-bridge-smoke.mjs",
     "test:search": "node tools/search-smoke.mjs",
     "test:project": "node tools/project-model-smoke.mjs",
-    "test:editor": "node tools/editor-model-smoke.mjs",
     "test:ai": "node tools/ai-service-smoke.mjs",
     "test:juicer-review": "node tools/juicer-review-smoke.mjs",
     "test:global-theme": "node tools/global-theme-smoke.mjs",
+    "test:folder-scope": "node tools/folder-scope-smoke.mjs",
+    "test:plan": "node tools/plan-model-smoke.mjs",
+    "test:privacy-release": "node tools/privacy-release-smoke.mjs",
     "verify:release": "node tools/verify-release.mjs"
   },
   "keywords": [

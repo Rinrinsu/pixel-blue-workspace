@@ -29,6 +29,7 @@ jobs:
       - name: Verify metadata and build
         run: |
           pnpm run build
+          pnpm run test:privacy-release
           pnpm run verify:release
           test "${GITHUB_REF_NAME}" = "$(node -p "require('./manifest.json').version")"
 

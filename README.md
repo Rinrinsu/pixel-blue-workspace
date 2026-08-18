@@ -6,12 +6,12 @@ daily notes, ideas, and knowledge workflows into one dashboard.
 ## Highlights
 
 - Expandable multi-level navigation with persistent custom items
-- Project dashboards, progress tracking, task boards, and recent schedules
-- Editable database-style note tables and Markdown properties
-- Daily notes with in-page editing and automatic saving
+- Project dashboards with manually maintained progress and recent schedules
+- Filterable, sortable note property tables with inline property editing
+- Daily-note quick capture, read-only preview, and native Obsidian editing
 - Full-vault Boolean search with BM25-style keyword weighting
-- Visual Markdown editing, annotations, and review workflows
-- Optional OpenAI, Claude, secure gateway, and local Codex integrations
+- Native Obsidian Markdown editing from every file entry
+- Optional OpenAI, Claude, and secure gateway integrations
 - A pixel-blue light and dark skin that pairs with the official pixel-blue theme
 - No telemetry, advertising, or background data collection
 
@@ -38,15 +38,15 @@ Release into `.obsidian/plugins/pixel-blue-workspace/` for testing.
 - 可展开、可右键维护并持久化的多层导航
 - 工作台、项目档案、多维表、每日笔记、知识中心、知识库、灵感收集和笔记榨汁机页面
 - 笔记数、进行中项目、未完成任务、完成率总览
-- 项目进度、Markdown 任务看板和近期排期
-- 项目阶段自定义、阶段进度编辑和总进度自动回写
-- 可新增笔记、添加字段并直接编辑属性的多维表
-- 最近 28 天任务燃尽热力图（绿色 → 蓝色 → 红色）
-- 每日笔记自动创建、页面内编辑和自动保存
-- 共用可视化 Markdown 编辑器：字体、颜色、间距、标题分色、列表、对齐和图片
-- 选中文本添加批注；存在批注时自动展开约 8:2 的批注侧栏
-- 可隐藏 AI 右侧栏，以及 OpenAI、Claude、本机 Codex 桥接和安全网关设置
-- 本机 Codex 桥接支持令牌验证、只读隔离、会话保存与自动续接
+- 项目进度、Markdown 任务清单和近期排期
+- 项目阶段和总进度由用户通过可视化滑块手工维护；关联任务只用于展示，不会擅自修改进度
+- 项目档案提供识别预览，可查看自动识别依据并把任意笔记手动指定为项目主页
+- 新增计划及现有任务都可以从下拉框选择或更换所属项目
+- 可新增笔记、添加字段、筛选、排序并直接编辑属性的笔记属性表
+- 基于 `✅ YYYY-MM-DD` 真实完成日期的最近 28 天任务完成记录
+- 每日笔记快速记录、只读预览和 Obsidian 原生编辑
+- 所有笔记入口统一打开 Obsidian 原生 Markdown 编辑器，不重新序列化正文
+- 可隐藏 AI 右侧栏，以及 OpenAI、Claude、安全网关和 Windows 开发用本机 Codex 设置
 - API 密钥使用 Obsidian SecretStorage，不写入 Markdown 或普通插件数据
 - 笔记榨汁机：Raw 原料生成结构化 Review，人工确认平台/内容分类后进入知识库
 - Review 支持正文级差异审阅：对照原料相近片段、标记增删，并逐段采用或暂不采用
@@ -81,14 +81,17 @@ tags: [project]
 ---
 ```
 
-当 `stages` 存在时，插件会用所有阶段进度的平均值计算项目总进度，并在保存阶段时同步更新 `progress` 与 `status`。
+插件会从项目区的“进行中 / 已完成”目录自动识别直接项目笔记，也支持 `type: project`、`project: true` 或项目标签。“识别预览”会列出识别依据，未识别笔记可手动设为项目主页。项目进度通过工作台中的滑块或阶段编辑器手工维护；保存时会同步更新 `progress` 与 `status`。
 
 任务支持普通 Markdown 任务；在末尾加入日期即可进入排期：
 
 ```markdown
 - [ ] 完成首页原型 📅 2026-07-25
-- [x] 整理需求 due: 2026-07-20
+- [x] 整理需求 due: 2026-07-20 ✅ 2026-07-22
+- [ ] 提交测试版 📅 2026-07-28 project:: [[官网改版]]
 ```
+
+使用“新增计划”时可以选择所属项目，任务卡片也能随时更换归属；带有 `project:: [[项目名]]` 的计划会关联并显示到对应项目，但不会自动修改手工进度。
 
 ## 安装
 
@@ -115,7 +118,7 @@ tags: [project]
 
 AI 功能需要 Obsidian 1.11.4 或更高版本。打开插件设置中的“AI 与右侧栏”，选择提供商、模型并安全保存密钥后，可使用“测试连接”验证。
 
-使用本机 Codex 时，先双击 `bridge/start-codex-bridge.cmd`，再把窗口显示的桥接令牌粘贴到插件设置。详细说明见 `bridge/README.md`。
+仓库中的本机 Codex 桥接只用于 Windows 开发环境，不包含在社区商店发布包中，也不是 Mac 官方安装版的开箱功能。跨设备使用 AI 时请选择 OpenAI、Claude 或自定义安全网关。
 
 ## 网络与隐私披露
 
@@ -124,7 +127,7 @@ AI 功能需要 Obsidian 1.11.4 或更高版本。打开插件设置中的“AI 
 - OpenAI、Anthropic 或自定义网关模式会把聊天输入，以及用户明确允许的当前笔记上下文，发送到设置中的接口地址。
 - 笔记榨汁机只在用户点击处理时，把所选 Raw 原料发送到当前 AI 提供商。
 - API 密钥和桥接令牌保存在 Obsidian SecretStorage，不写入 Markdown、普通插件 `data.json` 或公开发布包。
-- 本机 Codex 桥接默认只监听 `127.0.0.1`，并要求设备本地生成的桥接令牌。
+- 仓库中的开发用本机桥接默认只监听 `127.0.0.1`，并要求设备本地生成的桥接令牌。
 
 ## 主题开发
 
@@ -149,7 +152,7 @@ styles.css                 构建时自动生成，请勿直接编辑
 
 ## 下一步建议
 
-- 多维表筛选、排序、分组与保存视图
+- 属性表分组、关系字段与保存视图
 - AI 语义检索、标签关系与关联图谱
 - 关键词索引持久化与单文件增量更新
 - 项目阶段模板与日历 / 甘特图视图

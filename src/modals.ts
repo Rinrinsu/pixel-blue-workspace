@@ -1,7 +1,8 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, FuzzySuggestModal, Modal, Setting, TFile, TFolder } from "obsidian";
 import {
   DatabaseColumn,
   DatabaseColumnType,
+  ProjectRecognitionCandidate,
   ProjectStage
 } from "./types";
 import { JuicerReviewMetadata } from "./juicer-service";
@@ -21,6 +22,82 @@ export interface InspirationCaptureInput {
     data: ArrayBuffer;
     mimeType: string;
   };
+}
+
+export interface PlanCaptureInput {
+  text: string;
+  due?: string;
+  project?: string;
+}
+
+class PlanCaptureModal extends Modal {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private projectTitles: string[],
+    private resolveValue: (value: PlanCaptureInput | undefined) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("vw-plan-capture-modal");
+    this.titleEl.setText("新增计划");
+    this.contentEl.createEl("p", {
+      text: "计划会写入共享项目区的真实 Markdown 清单，并同步到任务看板与近期排期。",
+      cls: "vw-modal-help"
+    });
+    const value: PlanCaptureInput = { text: "" };
+    new Setting(this.contentEl)
+      .setName("计划内容")
+      .addText((text) => {
+        text.setPlaceholder("例如：完成项目提案初稿");
+        text.onChange((next) => { value.text = next; });
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") this.submit(value);
+        });
+        window.setTimeout(() => text.inputEl.focus());
+      });
+    new Setting(this.contentEl)
+      .setName("截止日期（可选）")
+      .setDesc("设置后会出现在近期排期中")
+      .addText((text) => {
+        text.inputEl.type = "date";
+        text.onChange((next) => { value.due = next || undefined; });
+      });
+    if (this.projectTitles.length) {
+      new Setting(this.contentEl)
+        .setName("所属项目（可选）")
+        .setDesc("关联后会显示在对应项目中，但不会自动修改手工进度")
+        .addDropdown((dropdown) => {
+          dropdown.addOption("", "不关联项目");
+          this.projectTitles.forEach((title) => dropdown.addOption(title, title));
+          dropdown.onChange((next) => { value.project = next || undefined; });
+        });
+    }
+    new Setting(this.contentEl)
+      .addButton((button) => button
+        .setButtonText("取消")
+        .onClick(() => this.close()))
+      .addButton((button) => button
+        .setCta()
+        .setButtonText("添加计划")
+        .onClick(() => this.submit(value)));
+  }
+
+  onClose(): void {
+    if (!this.settled) this.resolveValue(undefined);
+    this.contentEl.empty();
+  }
+
+  private submit(value: PlanCaptureInput): void {
+    const text = value.text.replace(/\s+/g, " ").trim();
+    if (!text) return;
+    this.settled = true;
+    this.resolveValue({ text, due: value.due, project: value.project });
+    this.close();
+  }
 }
 
 class TextPromptModal extends Modal {
@@ -72,6 +149,49 @@ class TextPromptModal extends Modal {
     this.settled = true;
     this.resolveValue(normalized);
     this.close();
+  }
+}
+
+class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private initialPath: string | undefined,
+    private resolveValue: (value: string | undefined) => void
+  ) {
+    super(app);
+    this.setPlaceholder(
+      initialPath
+        ? `当前目录：${initialPath} · 输入名称筛选`
+        : "输入名称筛选 Vault 文件夹"
+    );
+  }
+
+  getItems(): TFolder[] {
+    return this.app.vault.getAllLoadedFiles()
+      .filter((file): file is TFolder => file instanceof TFolder)
+      .sort((left, right) => left.path.localeCompare(right.path, "zh-CN"));
+  }
+
+  getItemText(folder: TFolder): string {
+    return folder.path || "Vault 根目录 /";
+  }
+
+  onChooseItem(folder: TFolder): void {
+    this.settled = true;
+    this.resolveValue(folder.path);
+  }
+
+  onClose(): void {
+    super.onClose();
+    // SuggestModal may close before it invokes onChooseItem. Defer the cancel
+    // result so a real selection gets the first chance to settle the promise.
+    window.setTimeout(() => {
+      if (this.settled) return;
+      this.settled = true;
+      this.resolveValue(undefined);
+    });
   }
 }
 
@@ -348,6 +468,124 @@ class ProjectStagesModal extends Modal {
     this.settled = true;
     this.resolveValue(stages);
     this.close();
+  }
+}
+
+class ProjectProgressModal extends Modal {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private projectTitle: string,
+    private initialProgress: number,
+    private resolveValue: (value: number | undefined) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText(`编辑项目进度 · ${this.projectTitle}`);
+    this.contentEl.createEl("p", {
+      text: "这是手工进度，不会根据任务数量自动变化。",
+      cls: "vw-modal-help"
+    });
+    let progress = Math.max(0, Math.min(100, Math.round(this.initialProgress)));
+    const editor = this.contentEl.createDiv({ cls: "vw-progress-editor" });
+    const range = editor.createEl("input", {
+      type: "range",
+      value: String(progress),
+      attr: { min: "0", max: "100", step: "5", "aria-label": "项目完成进度" }
+    });
+    const number = editor.createEl("input", {
+      type: "number",
+      value: String(progress),
+      attr: { min: "0", max: "100", step: "5", "aria-label": "项目完成百分比" }
+    });
+    editor.createSpan({ text: "%" });
+    const update = (next: number) => {
+      progress = Math.max(0, Math.min(100, Number.isFinite(next) ? Math.round(next) : 0));
+      range.value = String(progress);
+      number.value = String(progress);
+    };
+    range.addEventListener("input", () => update(Number(range.value)));
+    number.addEventListener("change", () => update(Number(number.value)));
+    new Setting(this.contentEl)
+      .addButton((button) => button
+        .setButtonText("取消")
+        .onClick(() => this.close()))
+      .addButton((button) => button
+        .setCta()
+        .setButtonText("保存进度")
+        .onClick(() => {
+          this.settled = true;
+          this.resolveValue(progress);
+          this.close();
+        }));
+  }
+
+  onClose(): void {
+    if (!this.settled) this.resolveValue(undefined);
+    this.contentEl.empty();
+  }
+}
+
+class ProjectRecognitionModal extends Modal {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private candidates: ProjectRecognitionCandidate[],
+    private resolveValue: (value: TFile | undefined) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("vw-project-recognition-modal");
+    this.titleEl.setText("项目识别预览");
+    const detected = this.candidates.filter((candidate) => candidate.detected);
+    this.contentEl.createEl("p", {
+      text: `当前识别 ${detected.length} 个项目。未识别的笔记可以手动设为项目主页。`,
+      cls: "vw-modal-help"
+    });
+    const list = this.contentEl.createDiv({ cls: "vw-project-recognition-list" });
+    this.candidates.forEach((candidate) => {
+      const row = list.createDiv({
+        cls: `vw-project-recognition-row${candidate.detected ? " is-detected" : ""}`
+      });
+      const identity = row.createDiv({ cls: "vw-project-recognition-identity" });
+      identity.createDiv({ text: candidate.title, cls: "vw-project-recognition-title" });
+      identity.createDiv({
+        text: `${candidate.file.path} · ${candidate.reason}`,
+        cls: "vw-project-recognition-path"
+      });
+      if (candidate.detected) {
+        row.createSpan({
+          text: candidate.status === "done" ? "已完成" : "已识别",
+          cls: "vw-project-recognition-state"
+        });
+      } else {
+        const mark = row.createEl("button", {
+          text: "设为项目主页",
+          cls: "mod-cta",
+          attr: { type: "button" }
+        });
+        mark.addEventListener("click", () => {
+          this.settled = true;
+          this.resolveValue(candidate.file);
+          this.close();
+        });
+      }
+    });
+    new Setting(this.contentEl)
+      .addButton((button) => button
+        .setButtonText("关闭")
+        .onClick(() => this.close()));
+  }
+
+  onClose(): void {
+    if (!this.settled) this.resolveValue(undefined);
+    this.contentEl.empty();
   }
 }
 
@@ -645,6 +883,24 @@ export function requestText(
   });
 }
 
+export function requestPlan(
+  app: App,
+  projectTitles: string[] = []
+): Promise<PlanCaptureInput | undefined> {
+  return new Promise((resolve) => {
+    new PlanCaptureModal(app, projectTitles, resolve).open();
+  });
+}
+
+export function requestFolder(
+  app: App,
+  initialPath?: string
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    new FolderSuggestModal(app, initialPath, resolve).open();
+  });
+}
+
 export function requestInspirationCapture(
   app: App
 ): Promise<InspirationCaptureInput | undefined> {
@@ -670,6 +926,25 @@ export function editProjectStages(
 ): Promise<ProjectStage[] | undefined> {
   return new Promise((resolve) => {
     new ProjectStagesModal(app, title, stages, resolve).open();
+  });
+}
+
+export function editProjectProgress(
+  app: App,
+  title: string,
+  progress: number
+): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    new ProjectProgressModal(app, title, progress, resolve).open();
+  });
+}
+
+export function previewProjectRecognition(
+  app: App,
+  candidates: ProjectRecognitionCandidate[]
+): Promise<TFile | undefined> {
+  return new Promise((resolve) => {
+    new ProjectRecognitionModal(app, candidates, resolve).open();
   });
 }
 

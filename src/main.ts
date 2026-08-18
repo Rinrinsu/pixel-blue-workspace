@@ -72,7 +72,6 @@ const DEFAULT_SETTINGS: VisualWorkspaceSettings = {
   projectFolder: "Projects",
   databaseNewNoteFolder: "Inbox",
   databaseColumns: createDefaultDatabaseColumns(),
-  editorDocuments: {},
   ai: {
     enabled: false,
     sidebarOpen: false,
@@ -146,6 +145,10 @@ export default class VisualWorkspacePlugin extends Plugin {
       name: "打开可视化工作台",
       callback: () => void this.activateView()
     });
+    this.registerObsidianProtocolHandler(
+      "pixel-blue-workspace",
+      () => void this.activateView()
+    );
     this.registerEvent(
       this.app.workspace.on("css-change", () => {
         this.applyThemeToOpenViews();
@@ -190,7 +193,6 @@ export default class VisualWorkspacePlugin extends Plugin {
       databaseColumns: saved?.databaseColumns?.length
         ? saved.databaseColumns
         : createDefaultDatabaseColumns(),
-      editorDocuments: saved?.editorDocuments ?? {},
       uiColors: {
         ...DEFAULT_SETTINGS.uiColors,
         ...(saved?.uiColors ?? {})
@@ -201,7 +203,7 @@ export default class VisualWorkspacePlugin extends Plugin {
       }
     };
     applyNavigationVisualDefaults(this.settings.navigation);
-    await this.saveData(this.settings);
+    await this.saveSettings();
   }
 
   async saveSettings(): Promise<void> {
@@ -262,7 +264,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
         items: [
           {
             name: "项目标签",
-            desc: "带有该标签或 type: project 的笔记会被识别为项目",
+            desc: "除项目区的进行中/已完成目录外，带有该标签或 type: project 的笔记也会被识别",
             control: { type: "text", key: "projectTag" }
           },
           {
@@ -282,14 +284,14 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
           },
           {
             name: "AI 提供商",
-            desc: "本机 Codex 需要单独运行本地桥接服务；安全网关适合跨设备使用",
+            desc: "本机 Codex 仅供 Windows 仓库开发环境使用；官方安装和 Mac 请使用 API 或安全网关",
             control: {
               type: "dropdown",
               key: "aiProvider",
               options: {
                 openai: "OpenAI API",
                 anthropic: "Claude API",
-                "codex-local": "本机 Codex 桥接",
+                "codex-local": "本机 Codex（Windows 开发）",
                 gateway: "自定义安全网关"
               }
             }
@@ -765,7 +767,7 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("项目标签")
-      .setDesc("带有该标签或 type: project 的笔记会被识别为项目")
+      .setDesc("除项目区的进行中/已完成目录外，带有该标签或 type: project 的笔记也会被识别")
       .addText((text) => text
         .setValue(this.plugin.settings.projectTag)
         .onChange(async (value) => {
@@ -805,11 +807,11 @@ class VisualWorkspaceSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("AI 提供商")
-      .setDesc("本机 Codex 需要单独运行本地桥接服务；安全网关适合跨设备使用")
+      .setDesc("本机 Codex 仅供 Windows 仓库开发环境使用；官方安装和 Mac 请使用 API 或安全网关")
       .addDropdown((dropdown) => dropdown
         .addOption("openai", "OpenAI API")
         .addOption("anthropic", "Claude API")
-        .addOption("codex-local", "本机 Codex 桥接")
+        .addOption("codex-local", "本机 Codex（Windows 开发）")
         .addOption("gateway", "自定义安全网关")
         .setValue(this.plugin.settings.ai.provider)
         .onChange(async (value) => {
