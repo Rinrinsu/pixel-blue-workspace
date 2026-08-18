@@ -13,7 +13,10 @@ export interface TaskItem {
   done: boolean;
   file: TFile;
   line: number;
+  sourceLine: string;
   due?: string;
+  completed?: string;
+  project?: string;
 }
 
 export interface ProjectItem {
@@ -22,8 +25,19 @@ export interface ProjectItem {
   status: Status;
   progress: number;
   stages: ProjectStage[];
+  taskTotal: number;
+  taskDone: number;
+  progressSource: "stages" | "manual";
   due?: string;
   area?: string;
+}
+
+export interface ProjectRecognitionCandidate {
+  file: TFile;
+  title: string;
+  detected: boolean;
+  reason: string;
+  status?: Status;
 }
 
 export interface ProjectStage {
@@ -40,25 +54,6 @@ export interface DatabaseColumn {
   property: string;
   type: DatabaseColumnType;
   options?: string[];
-}
-
-export type EditorSpacing = "compact" | "normal" | "loose";
-export type HeadingColorMode = "level" | "accent" | "plain";
-
-export interface NoteAnnotation {
-  id: string;
-  quote: string;
-  prefix: string;
-  suffix: string;
-  note: string;
-  createdAt: string;
-  resolved: boolean;
-}
-
-export interface EditorDocumentState {
-  spacing: EditorSpacing;
-  headingColors: HeadingColorMode;
-  comments: NoteAnnotation[];
 }
 
 export type AIProviderId =
@@ -131,7 +126,6 @@ export type WorkspacePageId =
   | "inspiration"
   | "juicer"
   | "search"
-  | "document"
   | "collection";
 
 export interface NavNode {
@@ -141,6 +135,7 @@ export interface NavNode {
   page?: WorkspacePageId;
   path?: string;
   expanded?: boolean;
+  source?: "vault";
   children?: NavNode[];
 }
 
@@ -159,7 +154,6 @@ export interface VisualWorkspaceSettings {
   projectFolder: string;
   databaseNewNoteFolder: string;
   databaseColumns: DatabaseColumn[];
-  editorDocuments: Record<string, EditorDocumentState>;
   ai: AISettings;
   knowledgeFolder: string;
   inspirationFolder: string;

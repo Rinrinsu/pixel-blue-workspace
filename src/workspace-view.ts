@@ -1,24 +1,31 @@
 import {
   ItemView,
+  MarkdownRenderer,
   Menu,
   Notice,
   normalizePath,
   setIcon,
   TFile,
+  TFolder,
   WorkspaceLeaf
 } from "obsidian";
 import {
+  createDefaultNavigation,
   createNavigationId,
   findNavNode,
   findNavNodeLocation
 } from "./navigation";
 import {
+  editProjectProgress,
   editProjectStages,
   editJuicerMetadata,
   reviewJuicerBody,
   requestConfirmation,
   requestDatabaseColumn,
+  requestFolder,
   requestInspirationCapture,
+  requestPlan,
+  previewProjectRecognition,
   requestText
 } from "./modals";
 import {
@@ -43,15 +50,14 @@ import {
   formatRelativeDate,
   VaultService
 } from "./vault-service";
-import {
-  createDefaultEditorDocumentState,
-  VisualMarkdownEditor
-} from "./visual-editor";
 import { AIService } from "./ai-service";
 import { JuicerService } from "./juicer-service";
 import { toUnknownRecord } from "./type-guards";
+import { normalizeVaultFolderScope } from "./folder-scope";
 
-export const VIEW_TYPE = "visual-workspace-dashboard";
+export const VIEW_TYPE = "pixel-blue-workspace-dashboard";
+
+const VAULT_NAV_ROOT_ID = "group-vault-sync";
 
 const PIXEL_ICON_ASSETS: Record<string, string> = {
   "layout-dashboard": "assets/pixel-sky/icons/dashboard.png",
@@ -91,25 +97,24 @@ export class WorkspaceView extends ItemView {
   private activePath: string | undefined;
   private activeDate = formatLocalDate(new Date());
   private projectFilter: "doing" | "done" = "doing";
+  private showAllTimeline = false;
+  private readonly expandedTaskColumns = new Set<string>();
+  private databaseQuery = "";
+  private databaseSort: "modified-desc" | "title-asc" | "path-asc" = "modified-desc";
+  private databaseLimit = 100;
   private refreshTimer: number | undefined;
-  private dailySaveTimer: number | undefined;
   private searchTimer: number | undefined;
   private searchRequest = 0;
   private searchMode: SearchMode = "relevance";
   private searchQuery = "";
   private renderToken = 0;
   private sidebarScrollTop = 0;
+  private vaultRootExpanded = true;
+  private readonly vaultExpandedPaths = new Set<string>();
   private aiRequest = 0;
   private aiBusy = false;
   private aiMessages: AIChatMessage[] = [];
   private readonly juicerBusyPaths = new Set<string>();
-  private activeDocumentPath: string | undefined;
-  private activeEditorMarkdown:
-    | { path: string; content: string }
-    | undefined;
-  private documentReturn:
-    | { nodeId: string; page: WorkspacePageId; path?: string }
-    | undefined;
   private readonly service: VaultService;
   private readonly searchService: SearchService;
   private readonly aiService: AIService;
@@ -139,14 +144,13 @@ export class WorkspaceView extends ItemView {
     this.registerEvent(this.app.vault.on("create", () => this.handleVaultChange()));
     this.registerEvent(this.app.vault.on("delete", () => this.handleVaultChange()));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      if (file instanceof TFile) void this.handleFileRename(file, oldPath);
+      if (file instanceof TFolder) void this.handleFolderRename(file, oldPath);
       this.handleVaultChange();
     }));
   }
 
   async onClose(): Promise<void> {
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer);
-    if (this.dailySaveTimer !== undefined) window.clearTimeout(this.dailySaveTimer);
     if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
   }
 
@@ -174,7 +178,6 @@ export class WorkspaceView extends ItemView {
   }
 
   private scheduleRefresh(): void {
-    if (this.activePage === "daily" || this.activePage === "document") return;
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = undefined;
@@ -187,14 +190,44 @@ export class WorkspaceView extends ItemView {
     this.scheduleRefresh();
   }
 
-  private async handleFileRename(file: TFile, oldPath: string): Promise<void> {
-    const state = this.plugin.settings.editorDocuments[oldPath];
-    if (state) {
-      delete this.plugin.settings.editorDocuments[oldPath];
-      this.plugin.settings.editorDocuments[file.path] = state;
-      await this.plugin.saveSettings();
+  private async handleFolderRename(folder: TFolder, oldPath: string): Promise<void> {
+    const normalizedOldPath = normalizePath(oldPath).replace(/\/$/, "");
+    const normalizedNewPath = normalizePath(folder.path).replace(/\/$/, "");
+    const expandedPaths = Array.from(this.vaultExpandedPaths);
+    expandedPaths.forEach((path) => {
+      if (path === normalizedOldPath || path.startsWith(`${normalizedOldPath}/`)) {
+        this.vaultExpandedPaths.delete(path);
+        this.vaultExpandedPaths.add(
+          `${normalizedNewPath}${path.slice(normalizedOldPath.length)}`
+        );
+      }
+    });
+    let changed = false;
+    const updateNodes = (nodes: NavNode[]): void => {
+      nodes.forEach((node) => {
+        if (node.path) {
+          const currentPath = normalizePath(node.path);
+          if (
+            currentPath === normalizedOldPath
+            || currentPath.startsWith(`${normalizedOldPath}/`)
+          ) {
+            node.path = `${normalizedNewPath}${currentPath.slice(normalizedOldPath.length)}`;
+            changed = true;
+          }
+        }
+        if (node.children) updateNodes(node.children);
+      });
+    };
+    updateNodes(this.plugin.settings.navigation);
+    if (!changed) return;
+    if (
+      this.activePath === normalizedOldPath
+      || this.activePath?.startsWith(`${normalizedOldPath}/`)
+    ) {
+      this.activePath = `${normalizedNewPath}${this.activePath.slice(normalizedOldPath.length)}`;
     }
-    if (this.activeDocumentPath === oldPath) this.activeDocumentPath = file.path;
+    await this.plugin.saveSettings();
+    await this.render();
   }
 
   private async render(): Promise<void> {
@@ -241,17 +274,105 @@ export class WorkspaceView extends ItemView {
       cls: "vw-navigation",
       attr: { "aria-label": "pixel-blue Workspace 导航" }
     });
-    this.plugin.settings.navigation.forEach((node) => {
+    this.getRenderedNavigation().forEach((node) => {
       this.renderNavNode(navigation, node, 0);
     });
 
     const hint = sidebar.createDiv({ cls: "vw-sidebar-hint" });
-    hint.createSpan({ text: "右键导航可重命名、添加或删除" });
+    hint.createSpan({ text: "Vault 分区会自动同步真实文件夹；执行与搜索功能保持独立" });
 
     sidebar.scrollTop = this.sidebarScrollTop;
     sidebar.addEventListener("scroll", () => {
       this.sidebarScrollTop = sidebar.scrollTop;
     }, { passive: true });
+  }
+
+  private getRenderedNavigation(): NavNode[] {
+    const defaults = createDefaultNavigation();
+    const configured = this.plugin.settings.navigation;
+    const execution = configured.find((node) => node.id === "group-execution")
+      ?? defaults.find((node) => node.id === "group-execution");
+    const knowledge = configured.find((node) => node.id === "group-knowledge")
+      ?? defaults.find((node) => node.id === "group-knowledge");
+    const tools = configured.find((node) => node.id === "group-tools")
+      ?? defaults.find((node) => node.id === "group-tools");
+    const coreIds = new Set(["group-execution", "group-knowledge", "group-tools"]);
+    const customGroups = configured.filter((node) => !coreIds.has(node.id));
+    const rendered = [execution, knowledge, ...customGroups, this.createVaultNavigation(), tools]
+      .filter((node): node is NavNode => Boolean(node));
+    this.syncRenderedFolder(rendered, "projects", this.plugin.settings.projectFolder);
+    this.syncRenderedFolder(rendered, "database", this.plugin.settings.databaseNewNoteFolder);
+    this.syncRenderedFolder(rendered, "daily", this.plugin.settings.dailyFolder);
+    return rendered;
+  }
+
+  private syncRenderedFolder(nodes: NavNode[], nodeId: string, folder: string): void {
+    const node = findNavNode(nodes, nodeId);
+    if (!node) return;
+    node.path = normalizeVaultFolderScope(folder) || undefined;
+  }
+
+  private createVaultNavigation(): NavNode {
+    const folders = this.app.vault.getRoot().children
+      .filter((file): file is TFolder => file instanceof TFolder)
+      .filter((folder) => this.shouldShowVaultFolder(folder));
+    return {
+      id: VAULT_NAV_ROOT_ID,
+      label: "Vault 分区",
+      icon: "folder-tree",
+      source: "vault",
+      expanded: this.vaultRootExpanded,
+      children: this.sortVaultFolders(folders).map((folder) => this.createVaultFolderNode(folder))
+    };
+  }
+
+  private createVaultFolderNode(folder: TFolder): NavNode {
+    const childFolders = folder.children
+      .filter((file): file is TFolder => file instanceof TFolder)
+      .filter((child) => this.shouldShowVaultFolder(child));
+    return {
+      id: `vault-folder:${folder.path}`,
+      label: folder.name,
+      icon: "folder",
+      page: "collection",
+      path: folder.path,
+      source: "vault",
+      expanded: this.vaultExpandedPaths.has(folder.path),
+      children: this.sortVaultFolders(childFolders).map((child) => this.createVaultFolderNode(child))
+    };
+  }
+
+  private sortVaultFolders(folders: TFolder[]): TFolder[] {
+    return [...folders].sort((left, right) => left.name.localeCompare(
+      right.name,
+      "zh-CN",
+      { numeric: true, sensitivity: "base" }
+    ));
+  }
+
+  private shouldShowVaultFolder(folder: TFolder): boolean {
+    const configDir = normalizePath(this.app.vault.configDir).replace(/\/$/, "");
+    const path = normalizePath(folder.path);
+    return Boolean(path)
+      && path !== configDir
+      && !path.startsWith(`${configDir}/`)
+      && !folder.name.startsWith(".");
+  }
+
+  private toggleNavigationExpanded(node: NavNode): void {
+    const expanded = !node.expanded;
+    if (node.source === "vault") {
+      if (node.id === VAULT_NAV_ROOT_ID) {
+        this.vaultRootExpanded = expanded;
+      } else if (node.path) {
+        if (expanded) this.vaultExpandedPaths.add(node.path);
+        else this.vaultExpandedPaths.delete(node.path);
+      }
+    } else {
+      node.expanded = expanded;
+      void this.plugin.saveSettings();
+    }
+    void this.render();
   }
 
   private renderNavNode(parent: HTMLElement, node: NavNode, depth: number): void {
@@ -274,29 +395,33 @@ export class WorkspaceView extends ItemView {
       setIcon(toggle, node.expanded ? "chevron-down" : "chevron-right");
       toggle.addEventListener("click", (event) => {
         event.stopPropagation();
-        node.expanded = !node.expanded;
-        void this.plugin.saveSettings();
-        void this.render();
+        this.toggleNavigationExpanded(node);
       });
     }
 
     const button = row.createEl("button", {
       cls: "vw-nav-button",
-      attr: { title: `${node.label} · 右键管理` }
+      attr: {
+        title: node.path
+          ? `${node.label} · 读取 ${node.path} · 右键管理`
+          : `${node.label} · 尚未绑定文件夹 · 右键管理`
+      }
     });
     if (node.icon) {
       const icon = button.createSpan({ cls: "vw-nav-icon" });
       this.setWorkspaceIcon(icon, node.icon);
     }
-    button.createSpan({ text: node.label, cls: "vw-nav-label" });
+    const copy = button.createSpan({ cls: "vw-nav-copy" });
+    copy.createSpan({ text: node.label, cls: "vw-nav-label" });
+    if (node.path) copy.createSpan({ text: node.path, cls: "vw-nav-path" });
     button.addEventListener("click", () => {
       if (node.page) {
         this.activeNodeId = node.id;
         this.activePage = node.page;
         this.activePath = node.path;
       } else if (hasChildren) {
-        node.expanded = !node.expanded;
-        void this.plugin.saveSettings();
+        this.toggleNavigationExpanded(node);
+        return;
       }
       void this.render();
     });
@@ -313,6 +438,36 @@ export class WorkspaceView extends ItemView {
 
   private showNavigationMenu(event: MouseEvent, node: NavNode): void {
     const menu = new Menu();
+    if (node.source === "vault") {
+      if (node.path) {
+        menu.addItem((item) => item
+          .setTitle("读取此文件夹")
+          .setIcon("folder-open")
+          .onClick(() => {
+            this.activeNodeId = node.id;
+            this.activePage = "collection";
+            this.activePath = node.path;
+            void this.render();
+          }));
+      }
+      menu.addItem((item) => item
+        .setTitle("刷新 Vault 分区")
+        .setIcon("refresh-cw")
+        .onClick(() => void this.render()));
+      menu.showAtMouseEvent(event);
+      return;
+    }
+    menu.addItem((item) => item
+      .setTitle(node.path ? "更改读取文件夹" : "选择读取文件夹")
+      .setIcon("folder-open")
+      .onClick(() => void this.bindNavigationFolder(node)));
+    if (node.path) {
+      menu.addItem((item) => item
+        .setTitle("解除文件夹绑定")
+        .setIcon("folder-x")
+        .onClick(() => void this.unbindNavigationFolder(node)));
+    }
+    menu.addSeparator();
     menu.addItem((item) => item
       .setTitle("重命名")
       .setIcon("pencil")
@@ -331,6 +486,57 @@ export class WorkspaceView extends ItemView {
       .setIcon("trash-2")
       .onClick(() => void this.deleteNavigation(node)));
     menu.showAtMouseEvent(event);
+  }
+
+  private getNavigationFolder(nodeId: string, fallback: string): string {
+    if (nodeId === "projects" || nodeId === "database" || nodeId === "daily") {
+      return normalizeVaultFolderScope(fallback);
+    }
+    const configured = findNavNode(this.plugin.settings.navigation, nodeId);
+    return normalizeVaultFolderScope(configured?.path ?? fallback);
+  }
+
+  private async bindNavigationFolder(node: NavNode): Promise<void> {
+    const path = await requestFolder(this.app, node.path);
+    if (path === undefined) return;
+    node.path = normalizeVaultFolderScope(path) || undefined;
+    if (node.id === "projects") {
+      node.page = "projects";
+      this.plugin.settings.projectFolder = normalizeVaultFolderScope(node.path);
+    } else if (node.id === "database") {
+      node.page = "database";
+      this.plugin.settings.databaseNewNoteFolder = normalizeVaultFolderScope(node.path);
+    } else if (node.id === "daily") {
+      node.page = "daily";
+      this.plugin.settings.dailyFolder = normalizeVaultFolderScope(node.path);
+    } else if (!node.page) {
+      node.page = "collection";
+    }
+    node.icon ??= "folder";
+    this.activeNodeId = node.id;
+    this.activePage = node.page ?? "collection";
+    this.activePath = node.path;
+    await this.plugin.saveSettings();
+    await this.render();
+    new Notice(`“${node.label}”将读取：${node.path || "Vault 根目录 /"}`);
+  }
+
+  private async unbindNavigationFolder(node: NavNode): Promise<void> {
+    const path = node.path;
+    if (!path) return;
+    const confirmed = await requestConfirmation(
+      this.app,
+      "解除文件夹绑定",
+      `“${node.label}”将不再读取 ${path}，Vault 中的文件不会被修改。确认继续吗？`
+    );
+    if (!confirmed) return;
+    node.path = undefined;
+    if (node.id === "projects") this.plugin.settings.projectFolder = "";
+    if (node.id === "database") this.plugin.settings.databaseNewNoteFolder = "";
+    if (node.id === "daily") this.plugin.settings.dailyFolder = "";
+    if (this.activeNodeId === node.id) this.activePath = undefined;
+    await this.plugin.saveSettings();
+    await this.render();
   }
 
   private async renameNavigation(node: NavNode): Promise<void> {
@@ -392,7 +598,7 @@ export class WorkspaceView extends ItemView {
 
   private renderTopbar(parent: HTMLElement): void {
     const topbar = parent.createDiv({ cls: "vw-topbar" });
-    const active = findNavNode(this.plugin.settings.navigation, this.activeNodeId);
+    const active = findNavNode(this.getRenderedNavigation(), this.activeNodeId);
     topbar.createDiv({
       text: active?.label ?? "pixel-blue Workspace",
       cls: "vw-topbar-location"
@@ -620,13 +826,11 @@ export class WorkspaceView extends ItemView {
   }
 
   private getAIContextFile(): TFile | undefined {
-    if (this.activeDocumentPath) {
-      const file = this.app.vault.getAbstractFileByPath(this.activeDocumentPath);
-      if (file instanceof TFile) return file;
-    }
     if (this.activePage === "daily") {
       const path = normalizePath(
-        `${this.plugin.settings.dailyFolder}/${this.activeDate}.md`
+        [this.plugin.settings.dailyFolder, `${this.activeDate}.md`]
+          .filter(Boolean)
+          .join("/")
       );
       const file = this.app.vault.getAbstractFileByPath(path);
       if (file instanceof TFile) return file;
@@ -638,10 +842,7 @@ export class WorkspaceView extends ItemView {
     const file = this.getAIContextFile();
     if (!file || !this.plugin.settings.ai.includeCurrentNote) return {};
     if (this.isAIExcluded(file)) throw new Error("当前笔记位于 AI 排除目录中");
-    const editorIsOpen = this.activePage === "daily" || this.activePage === "document";
-    const content = editorIsOpen && this.activeEditorMarkdown?.path === file.path
-      ? this.activeEditorMarkdown.content
-      : await this.app.vault.cachedRead(file);
+    const content = await this.app.vault.cachedRead(file);
     return {
       currentFile: file.path,
       currentContent: content.slice(0, this.plugin.settings.ai.maxContextChars)
@@ -687,9 +888,6 @@ export class WorkspaceView extends ItemView {
       case "search":
         this.renderSearchPage(parent);
         break;
-      case "document":
-        await this.renderDocumentPage(parent);
-        break;
       case "collection":
         this.renderCollectionPage(parent, this.activePath);
         break;
@@ -724,7 +922,11 @@ export class WorkspaceView extends ItemView {
   }
 
   private async renderDashboard(parent: HTMLElement): Promise<void> {
-    const data = await this.service.collectDashboardData();
+    const projectFolder = this.getNavigationFolder(
+      "projects",
+      this.plugin.settings.projectFolder
+    );
+    const data = await this.service.collectDashboardData(projectFolder);
     const visibleTasks = this.plugin.settings.showCompleted
       ? data.tasks
       : data.tasks.filter((task) => !task.done);
@@ -734,8 +936,22 @@ export class WorkspaceView extends ItemView {
     titleBox.createDiv({ text: "VISUAL VAULT / OVERVIEW", cls: "vw-eyebrow" });
     titleBox.createEl("h1", { text: "我的工作台" });
     titleBox.createEl("p", {
-      text: `${new Intl.DateTimeFormat("zh-CN", { dateStyle: "full" }).format(new Date())} · 把散落的想法拼成清晰的进度`
+      text: `${new Intl.DateTimeFormat("zh-CN", { dateStyle: "full" }).format(new Date())} · 项目区：${projectFolder || "/"}`
     });
+    const sourceActions = titleBox.createDiv({ cls: "vw-heading-actions" });
+    const chooseProjectFolder = sourceActions.createEl("button", {
+      text: "选择共享项目区",
+      cls: "vw-secondary-button"
+    });
+    chooseProjectFolder.addEventListener("click", () => {
+      const node = findNavNode(this.getRenderedNavigation(), "projects");
+      if (node) void this.bindNavigationFolder(node);
+    });
+    const addPlan = sourceActions.createEl("button", {
+      text: "＋ 新增计划",
+      cls: "vw-primary-button"
+    });
+    addPlan.addEventListener("click", () => void this.createPlan(projectFolder));
     const ornament = header.createDiv({
       cls: "vw-theme-ornament",
       attr: { "aria-hidden": "true" }
@@ -759,7 +975,7 @@ export class WorkspaceView extends ItemView {
     const openPage = (nodeId: string, page: WorkspacePageId): void => {
       this.activeNodeId = nodeId;
       this.activePage = page;
-      this.activePath = undefined;
+      this.activePath = nodeId === "projects" ? projectFolder : undefined;
       void this.render();
     };
     const scrollToBoard = (): void => {
@@ -770,15 +986,20 @@ export class WorkspaceView extends ItemView {
     };
     this.stat(
       stats,
-      "笔记",
+      "项目区笔记",
       data.notes,
       "file-text",
-      () => openPage("database", "database")
+      () => {
+        this.activeNodeId = "projects";
+        this.activePage = "collection";
+        this.activePath = projectFolder;
+        void this.render();
+      }
     );
     this.stat(
       stats,
       "进行中的项目",
-      data.projects.filter((project) => project.status === "doing").length,
+      data.projects.filter((project) => project.status !== "done").length,
       "folder-kanban",
       () => openPage("projects", "projects")
     );
@@ -803,7 +1024,7 @@ export class WorkspaceView extends ItemView {
     const grid = parent.createDiv({ cls: "vw-grid" });
     this.renderProjectSummary(grid, data.projects);
     this.renderTimeline(grid, visibleTasks, data.projects);
-    this.renderBoard(parent, data.tasks);
+    this.renderBoard(parent, visibleTasks, projectFolder, data.projects);
   }
 
   private stat(
@@ -834,11 +1055,11 @@ export class WorkspaceView extends ItemView {
     const section = parent.createDiv({ cls: "vw-section" });
     this.sectionHeading(section, "PROJECT FILES", "项目进度");
     const list = section.createDiv({ cls: "vw-project-list" });
-    const active = projects.filter((project) => project.status === "doing");
+    const active = projects.filter((project) => project.status !== "done");
     if (!active.length) {
       list.createDiv({ text: "还没有进行中的项目", cls: "vw-empty" });
     } else {
-      active.slice(0, 8).forEach((project) => this.renderProjectRow(list, project));
+      active.forEach((project) => this.renderProjectRow(list, project));
     }
     this.renderProjectCategories(section, projects, "doing");
   }
@@ -847,17 +1068,31 @@ export class WorkspaceView extends ItemView {
     const row = parent.createDiv({ cls: "vw-project" });
     const top = row.createDiv({ cls: "vw-project-top" });
     const link = top.createEl("button", { text: project.title, cls: "vw-link" });
-    link.addEventListener("click", () => this.openVisualDocument(project.file));
-    top.createSpan({
+    link.addEventListener("click", () => void this.openNativeEditor(project.file));
+    const actions = top.createDiv({ cls: "vw-project-row-actions" });
+    actions.createSpan({
       text: `${project.progress}%`,
       cls: `vw-status is-${project.status}`
     });
+    const edit = actions.createEl("button", {
+      text: "编辑进度",
+      cls: "vw-secondary-button",
+      attr: { type: "button" }
+    });
+    edit.addEventListener("click", () => void this.editProjectProgress(project));
     const track = row.createDiv({ cls: "vw-progress" });
     const bar = track.createDiv({ cls: `vw-progress-bar is-${project.status}` });
     bar.style.width = `${project.progress}%`;
-    if (project.area || project.due) {
+    const projectMeta = [
+      project.taskTotal > 0
+        ? `任务 ${project.taskDone}/${project.taskTotal}`
+        : undefined,
+      project.area,
+      project.due
+    ].filter(Boolean);
+    if (projectMeta.length) {
       row.createDiv({
-        text: [project.area, project.due].filter(Boolean).join(" · "),
+        text: projectMeta.join(" · "),
         cls: "vw-meta"
       });
     }
@@ -869,31 +1104,44 @@ export class WorkspaceView extends ItemView {
     projects: ProjectItem[]
   ): void {
     const section = parent.createDiv({ cls: "vw-section" });
-    this.sectionHeading(section, "SCHEDULE STRIP", "近期排期");
+    const heading = this.sectionHeading(section, "SCHEDULE STRIP", "近期排期");
     const items = [
       ...tasks
         .filter((task) => !task.done && task.due)
         .map((task) => ({
-          title: task.text,
+          title: taskDisplayText(task.text),
           due: task.due!,
           file: task.file,
           kind: "任务"
         })),
       ...projects
-        .filter((project) => project.status === "doing" && project.due)
+        .filter((project) => project.status !== "done" && project.due)
         .map((project) => ({
           title: project.title,
           due: project.due!,
           file: project.file,
           kind: "项目"
         }))
-    ].sort((a, b) => a.due.localeCompare(b.due)).slice(0, 8);
+    ].filter((item) => {
+      const days = daysFromToday(item.due);
+      return days >= -7 && days <= this.plugin.settings.horizonDays;
+    }).sort((a, b) => a.due.localeCompare(b.due));
+    if (items.length > 8) {
+      const toggle = heading.createEl("button", {
+        text: this.showAllTimeline ? "收起" : `查看全部 ${items.length}`,
+        cls: "vw-secondary-button"
+      });
+      toggle.addEventListener("click", () => {
+        this.showAllTimeline = !this.showAllTimeline;
+        void this.render();
+      });
+    }
     const list = section.createDiv({ cls: "vw-timeline" });
     if (!items.length) {
       list.createDiv({ text: "添加 due 日期后会显示在这里", cls: "vw-empty" });
       return;
     }
-    items.forEach((item) => {
+    (this.showAllTimeline ? items : items.slice(0, 8)).forEach((item) => {
       const row = list.createDiv({ cls: "vw-timeline-item" });
       row.createDiv({ cls: "vw-dot" });
       const body = row.createDiv();
@@ -902,13 +1150,24 @@ export class WorkspaceView extends ItemView {
         cls: "vw-meta"
       });
       const link = body.createEl("button", { text: item.title, cls: "vw-link" });
-      link.addEventListener("click", () => this.openVisualDocument(item.file));
+      link.addEventListener("click", () => void this.openNativeEditor(item.file));
     });
   }
 
-  private renderBoard(parent: HTMLElement, tasks: TaskItem[]): void {
+  private renderBoard(
+    parent: HTMLElement,
+    tasks: TaskItem[],
+    projectFolder: string,
+    projects: ProjectItem[]
+  ): void {
     const section = parent.createDiv({ cls: "vw-section vw-board-section" });
-    this.sectionHeading(section, "TASK PATCHWORK", "任务看板");
+    const heading = this.sectionHeading(section, "TASK LIST", "任务清单");
+    heading.addClass("has-action");
+    const addPlan = heading.createEl("button", {
+      text: "＋ 新增计划",
+      cls: "vw-secondary-button"
+    });
+    addPlan.addEventListener("click", () => void this.createPlan(projectFolder));
     const board = section.createDiv({ cls: "vw-board" });
     const overdue = tasks.filter((task) => (
       !task.done
@@ -916,16 +1175,38 @@ export class WorkspaceView extends ItemView {
       && new Date(`${task.due}T23:59:59`) < new Date()
     ));
     const upcoming = tasks.filter((task) => !task.done && !overdue.includes(task));
-    this.taskColumn(board, "待处理", upcoming, "todo");
-    this.taskColumn(board, "已逾期", overdue, "overdue");
-    this.taskColumn(board, "已完成", tasks.filter((task) => task.done), "done");
+    const projectTitles = projects.map((project) => project.title);
+    this.taskColumn(board, "待处理", upcoming, "todo", projectTitles);
+    this.taskColumn(board, "已逾期", overdue, "overdue", projectTitles);
+    this.taskColumn(board, "已完成", tasks.filter((task) => task.done), "done", projectTitles);
+  }
+
+  private async createPlan(projectFolder: string): Promise<void> {
+    const projects = await this.service.listProjectsInFolder(projectFolder);
+    const plan = await requestPlan(
+      this.app,
+      projects.map((project) => project.title)
+    );
+    if (!plan) return;
+    try {
+      await this.service.addPlan(projectFolder, plan.text, plan.due, plan.project);
+      this.searchService.invalidate();
+      const projectText = plan.project ? ` · ${plan.project}` : "";
+      new Notice(plan.due
+        ? `计划已添加，截止 ${plan.due}${projectText}`
+        : `计划已添加${projectText}`);
+      await this.render();
+    } catch (error) {
+      new Notice(`新增计划失败：${getErrorMessage(error)}`, 6000);
+    }
   }
 
   private taskColumn(
     parent: HTMLElement,
     title: string,
     tasks: TaskItem[],
-    state: string
+    state: string,
+    projectTitles: string[]
   ): void {
     const column = parent.createDiv({ cls: `vw-column is-${state}` });
     const heading = column.createDiv({ cls: "vw-column-title" });
@@ -935,7 +1216,8 @@ export class WorkspaceView extends ItemView {
       column.createDiv({ text: "暂无任务", cls: "vw-empty" });
       return;
     }
-    tasks.slice(0, 12).forEach((task) => {
+    const expanded = this.expandedTaskColumns.has(state);
+    (expanded ? tasks : tasks.slice(0, 12)).forEach((task) => {
       const card = column.createDiv({
         cls: "vw-task",
         attr: { title: `打开来源：${task.file.basename}` }
@@ -959,12 +1241,12 @@ export class WorkspaceView extends ItemView {
         );
       });
       const titleButton = top.createEl("button", {
-        text: task.text,
+        text: taskDisplayText(task.text),
         cls: "vw-link vw-task-title",
         attr: { type: "button" }
       });
       titleButton.addEventListener("click", () => {
-        this.openVisualDocument(task.file);
+        void this.openNativeEditor(task.file);
         new Notice(`已打开：${task.file.basename}`);
       });
       card.createEl("small", {
@@ -990,36 +1272,83 @@ export class WorkspaceView extends ItemView {
           dueInput.value ? "截止日期已更新" : "截止日期已清除"
         );
       });
+      const projectField = card.createEl("label", { cls: "vw-task-project" });
+      projectField.createSpan({ text: "所属项目" });
+      const projectSelect = projectField.createEl("select", {
+        cls: "vw-task-project-select",
+        attr: { "aria-label": `设置“${task.text}”的所属项目` }
+      });
+      projectSelect.createEl("option", { text: "不关联项目", value: "" });
+      const availableTitles = [...new Set([
+        ...projectTitles,
+        ...(task.project ? [task.project] : [])
+      ])].sort((left, right) => left.localeCompare(right, "zh-CN"));
+      availableTitles.forEach((title) => {
+        projectSelect.createEl("option", { text: title, value: title });
+      });
+      projectSelect.value = task.project ?? "";
+      projectSelect.addEventListener("change", () => {
+        projectSelect.disabled = true;
+        void this.updateTask(
+          task,
+          task.done,
+          task.due,
+          projectSelect.value ? "所属项目已更新" : "已取消项目关联",
+          projectSelect.value || undefined
+        );
+      });
     });
     if (tasks.length > 12) {
-      column.createDiv({
-        text: `另有 ${tasks.length - 12} 项未在概览中展示`,
-        cls: "vw-task-overflow"
+      const toggle = column.createEl("button", {
+        text: expanded ? "收起" : `查看其余 ${tasks.length - 12} 项`,
+        cls: "vw-task-overflow vw-secondary-button"
+      });
+      toggle.addEventListener("click", () => {
+        if (expanded) this.expandedTaskColumns.delete(state);
+        else this.expandedTaskColumns.add(state);
+        void this.render();
       });
     }
   }
 
   private async renderProjectsPage(parent: HTMLElement): Promise<void> {
+    const projectFolder = this.getNavigationFolder("projects", this.plugin.settings.projectFolder);
     const heading = this.pageHeading(
       parent,
       "PROJECT ARCHIVE",
       "项目档案",
-      "每个项目都能自定义阶段名称与进度；进行中优先，已完成归档在下方。"
+      `读取 Vault 目录：${projectFolder || "/"} · 自动识别“进行中 / 已完成”目录中的项目，也支持 type: project 与项目标签。`
     );
-    const create = heading.createEl("button", {
+    const headingActions = heading.createDiv({ cls: "vw-heading-actions" });
+    const chooseFolder = headingActions.createEl("button", {
+      text: "选择项目文件夹",
+      cls: "vw-secondary-button"
+    });
+    chooseFolder.addEventListener("click", () => {
+      const node = findNavNode(this.getRenderedNavigation(), "projects");
+      if (node) void this.bindNavigationFolder(node);
+    });
+    const create = headingActions.createEl("button", {
       text: "＋ 新建项目",
       cls: "vw-primary-button"
     });
     create.addEventListener("click", () => void this.createProject());
-    const data = await this.service.collectDashboardData();
-    const projects = data.projects.filter((project) => project.status === this.projectFilter);
+    const preview = headingActions.createEl("button", {
+      text: "识别预览",
+      cls: "vw-secondary-button"
+    });
+    preview.addEventListener("click", () => void this.reviewProjectRecognition(projectFolder));
+    const scopedProjects = await this.service.listProjectsInFolder(projectFolder);
+    const projects = scopedProjects.filter((project) => (
+      this.matchesProjectFilter(project, this.projectFilter)
+    ));
     this.renderProjectGroup(
       parent,
       this.projectFilter === "doing" ? "进行中" : "已完成",
       projects,
       this.projectFilter === "doing" ? "ACTIVE" : "COMPLETED"
     );
-    this.renderProjectCategories(parent, data.projects);
+    this.renderProjectCategories(parent, scopedProjects);
   }
 
   private renderProjectCategories(
@@ -1033,7 +1362,9 @@ export class WorkspaceView extends ItemView {
       ["doing", "进行中"],
       ["done", "已完成"]
     ] as const).forEach(([status, label]) => {
-      const count = projects.filter((project) => project.status === status).length;
+      const count = projects.filter((project) => (
+        this.matchesProjectFilter(project, status)
+      )).length;
       const button = categories.createEl("button", {
         text: `${label} ${count}`,
         cls: `vw-project-category${selected === status ? " is-active" : ""}`,
@@ -1043,25 +1374,43 @@ export class WorkspaceView extends ItemView {
         this.projectFilter = status;
         this.activeNodeId = "projects";
         this.activePage = "projects";
-        this.activePath = undefined;
         void this.render();
       });
     });
+  }
+
+  private matchesProjectFilter(
+    project: ProjectItem,
+    filter: "doing" | "done"
+  ): boolean {
+    return filter === "done" ? project.status === "done" : project.status !== "done";
   }
 
   private async updateTask(
     task: TaskItem,
     done: boolean,
     due: string | undefined,
-    successMessage: string
+    successMessage: string,
+    project: string | undefined = task.project
   ): Promise<void> {
     try {
       await this.app.vault.process(task.file, (content) => {
         const eol = content.includes("\r\n") ? "\r\n" : "\n";
         const lines = content.split(/\r?\n/);
-        const current = lines[task.line];
-        if (current === undefined || !/^\s*[-*]\s+\[[ xX]\]\s+/.test(current)) {
-          throw new Error("任务所在行已经变化，请刷新后重试");
+        let targetLine = task.line;
+        let current = lines[targetLine];
+        if (current !== task.sourceLine) {
+          const candidates = lines
+            .map((line, index) => ({ line, index }))
+            .filter(({ line }) => taskTextFromLine(line) === task.text);
+          if (candidates.length !== 1) {
+            throw new Error("任务位置已经变化且无法唯一确认，请刷新后重试");
+          }
+          targetLine = candidates[0]!.index;
+          current = candidates[0]!.line;
+        }
+        if (!/^\s*[-*]\s+\[[ xX]\]\s+/.test(current)) {
+          throw new Error("任务内容已经变化，请刷新后重试");
         }
         let next = current.replace(
           /^(\s*[-*]\s+\[)[ xX](\]\s+)/,
@@ -1069,9 +1418,16 @@ export class WorkspaceView extends ItemView {
         );
         next = next
           .replace(/\s*(?:📅|due::?)\s*\d{4}-\d{2}-\d{2}/i, "")
+          .replace(/\s*(?:✅|completion::?)\s*\d{4}-\d{2}-\d{2}/i, "")
+          .replace(/\s*(?:project|项目)::?\s*(?:\[\[)?[^\]\n]+?(?:\]\])?\s*$/i, "")
           .trimEnd();
         if (due) next = `${next} 📅 ${due}`;
-        lines[task.line] = next;
+        const completed = done
+          ? task.completed ?? formatLocalDate(new Date())
+          : undefined;
+        if (completed) next = `${next} ✅ ${completed}`;
+        if (project) next = `${next} project:: [[${project}]]`;
+        lines[targetLine] = next;
         return lines.join(eol);
       });
       this.searchService.invalidate();
@@ -1107,7 +1463,7 @@ export class WorkspaceView extends ItemView {
       text: project.title,
       cls: "vw-link vw-project-archive-title"
     });
-    link.addEventListener("click", () => this.openVisualDocument(project.file));
+    link.addEventListener("click", () => void this.openNativeEditor(project.file));
     identity.createDiv({
       text: [project.area, project.due].filter(Boolean).join(" · ") || project.file.path,
       cls: "vw-meta"
@@ -1117,11 +1473,24 @@ export class WorkspaceView extends ItemView {
       text: `${project.progress}%`,
       cls: `vw-status is-${project.status}`
     });
+    if (project.taskTotal > 0) {
+      actions.createSpan({
+        text: `任务 ${project.taskDone}/${project.taskTotal}`,
+        cls: "vw-meta"
+      });
+    }
     const edit = actions.createEl("button", {
-      text: "管理阶段",
+      text: project.stages.length ? "编辑阶段进度" : "编辑进度",
       cls: "vw-secondary-button"
     });
-    edit.addEventListener("click", () => void this.manageProjectStages(project));
+    edit.addEventListener("click", () => void this.editProjectProgress(project));
+    if (!project.stages.length) {
+      const stagesButton = actions.createEl("button", {
+        text: "设置阶段",
+        cls: "vw-secondary-button"
+      });
+      stagesButton.addEventListener("click", () => void this.manageProjectStages(project));
+    }
 
     const progress = card.createDiv({ cls: "vw-progress vw-project-total-progress" });
     const bar = progress.createDiv({ cls: `vw-progress-bar is-${project.status}` });
@@ -1157,7 +1526,7 @@ export class WorkspaceView extends ItemView {
     if (!title) return;
     try {
       const file = await this.service.createProject(
-        this.plugin.settings.projectFolder,
+        this.getNavigationFolder("projects", this.plugin.settings.projectFolder),
         title
       );
       const stages = await editProjectStages(this.app, title, []);
@@ -1178,21 +1547,66 @@ export class WorkspaceView extends ItemView {
     if (!stages) return;
     try {
       await this.service.updateProjectStages(project.file, stages);
-      new Notice(`已更新 ${project.title} 的阶段与总进度`);
+      new Notice(`已更新 ${project.title} 的阶段与手工进度`);
       await this.render();
     } catch (error) {
       new Notice(`保存项目阶段失败：${getErrorMessage(error)}`);
     }
   }
 
+  private async editProjectProgress(project: ProjectItem): Promise<void> {
+    if (project.stages.length) {
+      await this.manageProjectStages(project);
+      return;
+    }
+    const progress = await editProjectProgress(
+      this.app,
+      project.title,
+      project.progress
+    );
+    if (progress === undefined) return;
+    try {
+      await this.service.updateProjectProgress(project.file, progress);
+      new Notice(`已将 ${project.title} 的手工进度更新为 ${progress}%`);
+      await this.render();
+    } catch (error) {
+      new Notice(`保存项目进度失败：${getErrorMessage(error)}`);
+    }
+  }
+
+  private async reviewProjectRecognition(projectFolder: string): Promise<void> {
+    const candidates = this.service.previewProjectRecognition(projectFolder);
+    const selected = await previewProjectRecognition(this.app, candidates);
+    if (!selected) return;
+    try {
+      await this.service.markProjectHome(selected, projectFolder);
+      new Notice(`已设为项目主页：${selected.path}`);
+      await this.render();
+    } catch (error) {
+      new Notice(`设置项目主页失败：${getErrorMessage(error)}`);
+    }
+  }
+
   private async renderDatabasePage(parent: HTMLElement): Promise<void> {
+    const databaseFolder = this.getNavigationFolder(
+      "database",
+      this.plugin.settings.databaseNewNoteFolder
+    );
     const heading = this.pageHeading(
       parent,
       "DATABASE",
-      "多维表",
-      "直接编辑 Vault 笔记属性；可新增笔记、扩展字段，并从最近 28 天热力图查看任务燃尽量。"
+      "笔记属性表",
+      `读取 Vault 目录：${databaseFolder || "/"} · 可筛选、排序并直接编辑该目录中的笔记属性。`
     );
     const actions = heading.createDiv({ cls: "vw-heading-actions" });
+    const chooseFolder = actions.createEl("button", {
+      text: "选择读取文件夹",
+      cls: "vw-secondary-button"
+    });
+    chooseFolder.addEventListener("click", () => {
+      const node = findNavNode(this.getRenderedNavigation(), "database");
+      if (node) void this.bindNavigationFolder(node);
+    });
     const create = actions.createEl("button", {
       text: "＋ 新增笔记",
       cls: "vw-primary-button"
@@ -1204,17 +1618,46 @@ export class WorkspaceView extends ItemView {
     });
     addColumn.addEventListener("click", () => void this.addDatabaseColumn());
 
-    const dashboard = await this.service.collectDashboardData();
-    this.renderTaskHeatmap(parent, dashboard.tasks);
+    const controls = parent.createDiv({ cls: "vw-section vw-database-controls" });
+    const filter = controls.createEl("input", {
+      type: "search",
+      value: this.databaseQuery,
+      cls: "vw-cell-control",
+      attr: { placeholder: "筛选标题或路径" }
+    });
+    filter.addEventListener("change", () => {
+      this.databaseQuery = filter.value.trim();
+      this.databaseLimit = 100;
+      void this.render();
+    });
+    const sort = controls.createEl("select", { cls: "vw-cell-control" });
+    sort.createEl("option", { value: "modified-desc", text: "最近修改" });
+    sort.createEl("option", { value: "title-asc", text: "标题 A–Z" });
+    sort.createEl("option", { value: "path-asc", text: "按路径" });
+    sort.value = this.databaseSort;
+    sort.addEventListener("change", () => {
+      this.databaseSort = sort.value as typeof this.databaseSort;
+      void this.render();
+    });
 
-    const files = this.app.vault.getMarkdownFiles()
-      .sort((a, b) => b.stat.mtime - a.stat.mtime)
-      .slice(0, 100);
+    const query = this.databaseQuery.toLocaleLowerCase("zh-CN");
+    const allFiles = this.service.listMarkdownInFolder(databaseFolder)
+      .filter((file) => !query || file.path.toLocaleLowerCase("zh-CN").includes(query))
+      .sort((left, right) => {
+        if (this.databaseSort === "title-asc") {
+          return left.basename.localeCompare(right.basename, "zh-CN", { numeric: true });
+        }
+        if (this.databaseSort === "path-asc") {
+          return left.path.localeCompare(right.path, "zh-CN", { numeric: true });
+        }
+        return right.stat.mtime - left.stat.mtime;
+      });
+    const files = allFiles.slice(0, this.databaseLimit);
     const section = parent.createDiv({ cls: "vw-section vw-table-section" });
     const scroller = section.createDiv({ cls: "vw-table-scroll" });
     const table = scroller.createEl("table", { cls: "vw-data-table" });
     const header = table.createEl("thead").createEl("tr");
-    header.createEl("th", { text: "标题" });
+    header.createEl("th", { text: "标题", cls: "vw-table-title-column" });
     this.plugin.settings.databaseColumns.forEach((column) => {
       const cell = header.createEl("th");
       const wrap = cell.createDiv({ cls: "vw-table-header-field" });
@@ -1226,26 +1669,38 @@ export class WorkspaceView extends ItemView {
       });
       remove.addEventListener("click", () => void this.removeDatabaseColumn(column));
     });
-    header.createEl("th", { text: "路径" });
-    header.createEl("th", { text: "最近修改" });
+    header.createEl("th", { text: "路径", cls: "vw-table-path-column" });
+    header.createEl("th", { text: "最近修改", cls: "vw-table-modified-column" });
     const body = table.createEl("tbody");
+    if (!files.length) {
+      const emptyRow = body.createEl("tr");
+      emptyRow.createEl("td", {
+        text: `“${databaseFolder || "/"}”中还没有 Markdown 笔记，可更换读取文件夹或新建笔记。`,
+        cls: "vw-table-empty",
+        attr: { colspan: String(this.plugin.settings.databaseColumns.length + 3) }
+      });
+    }
     files.forEach((file) => {
       const frontmatter = toUnknownRecord(
         this.app.metadataCache.getFileCache(file)?.frontmatter
       );
       const row = body.createEl("tr");
-      const titleCell = row.createEl("td");
+      const titleCell = row.createEl("td", { cls: "vw-table-title-column" });
       const open = titleCell.createEl("button", {
         text: String(frontmatter.title ?? file.basename),
         cls: "vw-link"
       });
-      open.addEventListener("click", () => this.openVisualDocument(file));
+      open.addEventListener("click", () => void this.openNativeEditor(file));
       this.plugin.settings.databaseColumns.forEach((column) => {
         const cell = row.createEl("td", { cls: "vw-editable-cell" });
         this.renderDatabaseCell(cell, file, column, frontmatter[column.property]);
       });
-      row.createEl("td", { text: file.parent?.path ?? "/" });
       row.createEl("td", {
+        text: file.parent?.path ?? "/",
+        cls: "vw-table-path-column"
+      });
+      row.createEl("td", {
+        cls: "vw-table-modified-column",
         text: new Intl.DateTimeFormat("zh-CN", {
           month: "2-digit",
           day: "2-digit",
@@ -1254,6 +1709,19 @@ export class WorkspaceView extends ItemView {
         }).format(file.stat.mtime)
       });
     });
+    if (allFiles.length > files.length) {
+      const more = section.createEl("button", {
+        text: `加载更多（剩余 ${allFiles.length - files.length} 篇）`,
+        cls: "vw-secondary-button"
+      });
+      more.addEventListener("click", () => {
+        this.databaseLimit += 100;
+        void this.render();
+      });
+    }
+
+    const dashboard = await this.service.collectDashboardData(databaseFolder);
+    this.renderTaskHeatmap(parent, dashboard.tasks);
   }
 
   private renderTaskHeatmap(parent: HTMLElement, tasks: TaskItem[]): void {
@@ -1264,11 +1732,8 @@ export class WorkspaceView extends ItemView {
     }> = [];
     const byDate = new Map<string, { total: number; done: number }>();
     tasks.forEach((task) => {
-      const dailyDate = /^\d{4}-\d{2}-\d{2}$/.test(task.file.basename)
-        ? task.file.basename
-        : undefined;
-      const date = task.due ?? dailyDate;
-      if (!date) return;
+      if (!task.done || !task.completed) return;
+      const date = task.completed;
       const count = byDate.get(date) ?? { total: 0, done: 0 };
       count.total += 1;
       if (task.done) count.done += 1;
@@ -1290,11 +1755,10 @@ export class WorkspaceView extends ItemView {
     const title = section.createDiv({ cls: "vw-heatmap-heading" });
     const titleText = title.createDiv();
     titleText.createDiv({ text: "LAST 28 DAYS", cls: "vw-section-code" });
-    titleText.createEl("h2", { text: "任务燃尽热力图" });
+    titleText.createEl("h2", { text: "任务完成记录" });
     const completed = dates.reduce((sum, item) => sum + item.count.done, 0);
-    const total = dates.reduce((sum, item) => sum + item.count.total, 0);
     title.createDiv({
-      text: `近 28 天完成 ${completed} / ${total}`,
+      text: `近 28 天记录完成 ${completed} 项`,
       cls: "vw-heatmap-summary"
     });
 
@@ -1310,7 +1774,7 @@ export class WorkspaceView extends ItemView {
       const cell = grid.createDiv({
         cls: `vw-heat-cell is-${level}`,
         attr: {
-          title: `${dateText} · 完成 ${count.done}/${count.total}`,
+          title: `${dateText} · 完成 ${count.done} 项`,
           "aria-label": `${dateText} 完成 ${count.done} 个任务`
         }
       });
@@ -1318,7 +1782,7 @@ export class WorkspaceView extends ItemView {
       cell.createSpan({ text: String(date.getDate()) });
     });
     const legend = section.createDiv({ cls: "vw-heatmap-legend" });
-    legend.createSpan({ text: "完成量" });
+    legend.createSpan({ text: "完成任务数" });
     [
       ["is-empty", "0"],
       ["is-green", "少"],
@@ -1432,7 +1896,7 @@ export class WorkspaceView extends ItemView {
     if (!title) return;
     try {
       const file = await this.service.createNote(
-        this.plugin.settings.databaseNewNoteFolder,
+        this.getNavigationFolder("database", this.plugin.settings.databaseNewNoteFolder),
         title
       );
       new Notice(`笔记已保存：${file.path}`);
@@ -1508,14 +1972,42 @@ export class WorkspaceView extends ItemView {
       });
     }
 
+    const dailyPath = normalizePath(
+      [this.plugin.settings.dailyFolder, `${this.activeDate}.md`]
+        .filter(Boolean)
+        .join("/")
+    );
+    const file = this.app.vault.getAbstractFileByPath(dailyPath);
+    if (file instanceof TFile) {
+      await this.renderDailyNativeSection(parent, file, this.activeDate);
+      return;
+    }
+    const empty = parent.createDiv({ cls: "vw-daily-editor vw-section" });
+    const bar = empty.createDiv({ cls: "vw-editor-bar" });
+    const title = bar.createDiv();
+    title.createDiv({ text: this.activeDate, cls: "vw-section-code" });
+    title.createEl("h2", { text: "当天还没有笔记" });
+    title.createDiv({
+      text: "浏览日期不会自动创建文件。需要记录时再创建，避免产生空白笔记。",
+      cls: "vw-meta"
+    });
+    const create = bar.createEl("button", {
+      text: "创建当天笔记",
+      cls: "vw-primary-button"
+    });
+    create.addEventListener("click", () => void this.createDailyFile());
+  }
+
+  private async createDailyFile(): Promise<void> {
     const file = await this.service.getOrCreateDailyFile(
       this.plugin.settings.dailyFolder,
       this.activeDate
     );
-    await this.renderEditorSection(parent, file, this.activeDate);
+    new Notice(`已创建：${file.path}`);
+    await this.render();
   }
 
-  private async renderEditorSection(
+  private async renderDailyNativeSection(
     parent: HTMLElement,
     file: TFile,
     code: string
@@ -1525,94 +2017,98 @@ export class WorkspaceView extends ItemView {
     const editorTitle = editorBar.createDiv();
     editorTitle.createDiv({ text: code, cls: "vw-section-code" });
     editorTitle.createEl("h2", { text: file.basename });
+    editorTitle.createDiv({
+      text: "这里显示只读预览；编辑时使用 Obsidian 原生编辑器，不会重写 Markdown 结构。",
+      cls: "vw-meta"
+    });
     const editorActions = editorBar.createDiv({ cls: "vw-editor-actions" });
-    const saveState = editorActions.createSpan({
-      text: "已保存",
-      cls: "vw-save-state"
+    const openNative = editorActions.createEl("button", {
+      text: "使用原生编辑器",
+      cls: "vw-primary-button"
     });
-    const openSource = editorActions.createEl("button", {
-      text: "在 Obsidian 编辑器中打开",
-      cls: "vw-secondary-button"
-    });
-    openSource.addEventListener("click", () => void this.app.workspace.getLeaf().openFile(file));
-    const content = await this.app.vault.read(file);
-    this.activeEditorMarkdown = { path: file.path, content };
-    const documentState = this.plugin.settings.editorDocuments[file.path]
-      ?? createDefaultEditorDocumentState();
-    const visualEditor = new VisualMarkdownEditor({
-      app: this.app,
-      filePath: file.path,
-      markdown: content,
-      state: documentState,
-      onChange: (nextContent) => {
-        this.activeEditorMarkdown = { path: file.path, content: nextContent };
-        saveState.setText("保存中…");
-        if (this.dailySaveTimer !== undefined) window.clearTimeout(this.dailySaveTimer);
-        this.dailySaveTimer = window.setTimeout(async () => {
-          this.dailySaveTimer = undefined;
-          try {
-            await this.app.vault.process(file, () => nextContent);
-            saveState.setText("已保存");
-          } catch {
-            saveState.setText("保存失败");
-            new Notice("笔记保存失败，请重试");
-          }
-        }, 500);
-      },
-      onStateChange: async (nextState) => {
-        this.plugin.settings.editorDocuments[file.path] = nextState;
-        await this.plugin.saveSettings();
+    openNative.addEventListener("click", () => void this.openNativeEditor(file));
+
+    const quickCapture = editor.createDiv({ cls: "vw-daily-quick-capture" });
+    const captureInput = quickCapture.createEl("textarea", {
+      cls: "vw-daily-quick-input",
+      attr: {
+        placeholder: "快速记录正文或待办，不需要输入 Markdown 语法",
+        rows: "3"
       }
     });
-    visualEditor.mount(editor);
-  }
-
-  private async renderDocumentPage(parent: HTMLElement): Promise<void> {
-    const abstract = this.activeDocumentPath
-      ? this.app.vault.getAbstractFileByPath(this.activeDocumentPath)
-      : undefined;
-    if (!(abstract instanceof TFile)) {
-      parent.createDiv({
-        text: "这篇笔记已经移动或删除，请返回原页面重新选择。",
-        cls: "vw-empty vw-section"
-      });
-      return;
-    }
-    const heading = this.pageHeading(
-      parent,
-      "FOCUS EDITOR",
-      abstract.basename,
-      abstract.path
-    );
-    const back = heading.createEl("button", {
-      text: "← 返回",
+    const captureActions = quickCapture.createDiv({ cls: "vw-heading-actions" });
+    const addText = captureActions.createEl("button", {
+      text: "添加正文",
       cls: "vw-secondary-button"
     });
-    back.addEventListener("click", () => this.closeVisualDocument());
-    await this.renderEditorSection(parent, abstract, "VISUAL MARKDOWN");
+    addText.addEventListener("click", () => {
+      void this.appendDailyEntry(file, captureInput, false);
+    });
+    const addTask = captureActions.createEl("button", {
+      text: "添加待办",
+      cls: "vw-secondary-button"
+    });
+    addTask.addEventListener("click", () => {
+      void this.appendDailyEntry(file, captureInput, true);
+    });
+
+    const preview = editor.createDiv({
+      cls: "vw-daily-native-preview markdown-rendered",
+      attr: {
+        role: "button",
+        tabindex: "0",
+        title: "点击后在右侧打开 Obsidian 原生编辑器"
+      }
+    });
+    const content = await this.app.vault.cachedRead(file);
+    await MarkdownRenderer.render(this.app, content, preview, file.path, this);
+    const openFromPreview = (event: Event): void => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("a, button, input")) return;
+      void this.openNativeEditor(file);
+    };
+    preview.addEventListener("click", openFromPreview);
+    preview.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      void this.openNativeEditor(file);
+    });
   }
 
-  private openVisualDocument(file: TFile): void {
-    if (this.activePage !== "document") {
-      this.documentReturn = {
-        nodeId: this.activeNodeId,
-        page: this.activePage,
-        path: this.activePath
-      };
-    }
-    this.activeDocumentPath = file.path;
-    this.activePage = "document";
-    void this.render();
+  private async appendDailyEntry(
+    file: TFile,
+    input: HTMLTextAreaElement,
+    asTask: boolean
+  ): Promise<void> {
+    const value = input.value.trim();
+    if (!value) return;
+    const entry = asTask
+      ? value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+          .map((line) => `- [ ] ${line}`).join("\n")
+      : value;
+    await this.app.vault.process(file, (content) => insertUnderHeading(
+      content,
+      asTask ? "## 今天完成" : "## 临时想法",
+      entry
+    ));
+    input.value = "";
+    this.searchService.invalidate();
+    new Notice(asTask ? "待办已添加到今日日记" : "内容已添加到今日日记");
+    await this.render();
   }
 
-  private closeVisualDocument(): void {
-    const target = this.documentReturn;
-    this.activeNodeId = target?.nodeId ?? "dashboard";
-    this.activePage = target?.page ?? "dashboard";
-    this.activePath = target?.path;
-    this.activeDocumentPath = undefined;
-    this.documentReturn = undefined;
-    void this.render();
+  private async openNativeEditor(file: TFile): Promise<void> {
+    const markdownLeaves = this.app.workspace.getLeavesOfType("markdown");
+    const existing = markdownLeaves.find((leaf) => {
+        const view = leaf.view as unknown as { file?: TFile };
+        return view.file?.path === file.path;
+      });
+    const leaf = existing
+      ?? markdownLeaves[0]
+      ?? this.app.workspace.getLeaf("split", "vertical");
+    await leaf.openFile(file, { active: true });
+    await this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
   }
 
   private renderDailyArchive(parent: HTMLElement): void {
@@ -1622,7 +2118,8 @@ export class WorkspaceView extends ItemView {
       "全部日期",
       "按日期浏览所有每日笔记，点击即可继续编辑。"
     );
-    const files = this.service.listMarkdownInFolder(this.plugin.settings.dailyFolder);
+    const files = this.service.listMarkdownInFolder(this.plugin.settings.dailyFolder)
+      .filter((file) => /^\d{4}-\d{2}-\d{2}$/.test(file.basename));
     this.renderFileList(parent, files, "尚未创建每日笔记", (file) => {
       this.activeDate = file.basename;
       this.activeNodeId = "daily";
@@ -1640,13 +2137,22 @@ export class WorkspaceView extends ItemView {
       "assets/pixel-sky/hero-knowledge-center.png"
     );
     const knowledge = this.service.listMarkdownInFolder(this.plugin.settings.knowledgeFolder);
+    const knowledgeRoot = this.app.vault.getAbstractFileByPath(
+      normalizePath(this.plugin.settings.knowledgeFolder)
+    );
+    const categoryCount = knowledgeRoot instanceof TFolder
+      ? knowledgeRoot.children.filter((child) => child instanceof TFolder).length
+      : 0;
+    const classified = knowledge.filter((file) => (
+      file.parent?.path !== normalizeVaultFolderScope(this.plugin.settings.knowledgeFolder)
+    )).length;
     const cards = parent.createDiv({ cls: "vw-stats" });
     this.stat(cards, "知识条目", knowledge.length, "library-big");
     this.stat(cards, "最近 7 天新增", knowledge.filter((file) => (
       Date.now() - file.stat.ctime <= 7 * 86400000
     )).length, "sparkles");
-    this.stat(cards, "可展开分类", 4, "folders");
-    this.stat(cards, "项目引用", "待统计", "link");
+    this.stat(cards, "分类目录", categoryCount, "folders");
+    this.stat(cards, "已分类条目", classified, "link");
     const section = parent.createDiv({ cls: "vw-section" });
     this.sectionHeading(section, "RECENT KNOWLEDGE", "最近更新");
     this.renderCompactFiles(section, knowledge.slice(0, 12));
@@ -1736,7 +2242,7 @@ export class WorkspaceView extends ItemView {
       if (frontmatter.source) {
         footer.createSpan({ text: "有来源 ↗", cls: "vw-inspiration-source" });
       }
-      card.addEventListener("click", () => this.openVisualDocument(file));
+      card.addEventListener("click", () => void this.openNativeEditor(file));
     }
   }
 
@@ -1830,7 +2336,7 @@ export class WorkspaceView extends ItemView {
       const row = list.createDiv({ cls: "vw-juicer-card" });
       const body = row.createDiv({ cls: "vw-juicer-card-body" });
       const open = body.createEl("button", { text: file.basename, cls: "vw-link" });
-      open.addEventListener("click", () => this.openVisualDocument(file));
+      open.addEventListener("click", () => void this.openNativeEditor(file));
       body.createDiv({
         text: processed ? "已生成过 Review 草稿" : file.path,
         cls: "vw-meta"
@@ -1859,7 +2365,7 @@ export class WorkspaceView extends ItemView {
       const card = list.createDiv({ cls: "vw-juicer-review-card" });
       const top = card.createDiv({ cls: "vw-juicer-review-top" });
       const title = top.createEl("button", { text: file.basename, cls: "vw-link" });
-      title.addEventListener("click", () => this.openVisualDocument(file));
+      title.addEventListener("click", () => void this.openNativeEditor(file));
       const confidence = toUnknownRecord(
         this.app.metadataCache.getFileCache(file)?.frontmatter
       ).confidence;
@@ -1892,7 +2398,7 @@ export class WorkspaceView extends ItemView {
         text: "打开草稿",
         cls: "vw-secondary-button"
       });
-      open.addEventListener("click", () => this.openVisualDocument(file));
+      open.addEventListener("click", () => void this.openNativeEditor(file));
       const bodyReview = actions.createEl("button", {
         text: "正文差异审阅",
         cls: "vw-secondary-button"
@@ -1938,7 +2444,7 @@ export class WorkspaceView extends ItemView {
         draft
       );
       new Notice(`Review 草稿已生成：${review.path}`);
-      this.openVisualDocument(review);
+      void this.openNativeEditor(review);
     } catch (error) {
       new Notice(`榨汁失败：${getErrorMessage(error)}`, 7000);
       if (button.isConnected) {
@@ -2004,7 +2510,7 @@ export class WorkspaceView extends ItemView {
         this.plugin.settings.knowledgeFolder
       );
       new Notice(`已进入知识库：${knowledge.path}`);
-      this.openVisualDocument(knowledge);
+      void this.openNativeEditor(knowledge);
     } catch (error) {
       new Notice(`入库失败：${getErrorMessage(error)}`);
     }
@@ -2015,16 +2521,15 @@ export class WorkspaceView extends ItemView {
       parent,
       "VAULT SEARCH",
       "全库搜索",
-      "精确布尔查询与关键词加权已接入；AI 语义检索需要后续连接嵌入模型。"
+      "提供已经可用的精确布尔查询与关键词相关性排序。"
     );
     const section = parent.createDiv({ cls: "vw-section vw-search-panel" });
     const modes = section.createDiv({ cls: "vw-search-tabs" });
     const modesData: Array<[string, string, string]> = [
       ["精确查询", "关键词与布尔语法，适合明确条件", "scan-search"],
-      ["相关性排序", "标题、文件名和词频加权", "list-filter"],
-      ["AI 语义检索", "按意思寻找相似内容，需要模型或嵌入", "brain-circuit"]
+      ["相关性排序", "标题、文件名和词频加权", "list-filter"]
     ];
-    const modeIds: SearchMode[] = ["exact", "relevance", "semantic"];
+    const modeIds: SearchMode[] = ["exact", "relevance"];
     modesData.forEach(([title, description, iconName], index) => {
       const mode = modeIds[index];
       if (!mode) return;
@@ -2163,12 +2668,12 @@ export class WorkspaceView extends ItemView {
     result.reasons.forEach((reason) => {
       reasons.createSpan({ text: reason });
     });
-    card.addEventListener("click", () => this.openVisualDocument(result.file));
+    card.addEventListener("click", () => void this.openNativeEditor(result.file));
   }
 
   private renderCollectionPage(parent: HTMLElement, path?: string): void {
-    const active = findNavNode(this.plugin.settings.navigation, this.activeNodeId);
-    this.pageHeading(
+    const active = findNavNode(this.getRenderedNavigation(), this.activeNodeId);
+    const heading = this.pageHeading(
       parent,
       "COLLECTION",
       active?.label ?? "自定义分类",
@@ -2176,9 +2681,24 @@ export class WorkspaceView extends ItemView {
         ? `读取 Vault 目录：${path}`
         : "这是一个自定义导航分类，可继续右键增加子级。"
     );
+    if (active && active.source !== "vault") {
+      const chooseFolder = heading.createEl("button", {
+        text: path ? "更换读取文件夹" : "选择 Vault 文件夹",
+        cls: "vw-secondary-button"
+      });
+      chooseFolder.addEventListener("click", () => void this.bindNavigationFolder(active));
+    }
     if (!path) {
       parent.createDiv({
-        text: "该导航尚未绑定 Vault 目录，后续会在分类属性中提供目录选择。",
+        text: "该导航尚未绑定 Vault 目录。点击上方“选择 Vault 文件夹”，即可读取真实目录中的 Markdown 笔记。",
+        cls: "vw-empty vw-section"
+      });
+      return;
+    }
+    const folder = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    if (!(folder instanceof TFolder)) {
+      parent.createDiv({
+        text: `已绑定的目录“${path}”不存在或已被移走，请重新选择实际文件夹。`,
         cls: "vw-empty vw-section"
       });
       return;
@@ -2211,7 +2731,7 @@ export class WorkspaceView extends ItemView {
       body.createSpan({ text: file.path, cls: "vw-meta" });
       button.addEventListener("click", () => {
         if (onClick) onClick(file);
-        else this.openVisualDocument(file);
+        else void this.openNativeEditor(file);
       });
     });
   }
@@ -2232,14 +2752,15 @@ export class WorkspaceView extends ItemView {
         }).format(file.stat.mtime),
         cls: "vw-meta"
       });
-      button.addEventListener("click", () => this.openVisualDocument(file));
+      button.addEventListener("click", () => void this.openNativeEditor(file));
     });
   }
 
-  private sectionHeading(parent: HTMLElement, label: string, title: string): void {
+  private sectionHeading(parent: HTMLElement, label: string, title: string): HTMLElement {
     const heading = parent.createDiv({ cls: "vw-section-heading" });
     heading.createDiv({ text: label, cls: "vw-section-code" });
     heading.createEl("h2", { text: title });
+    return heading;
   }
 
   private setWorkspaceIcon(element: HTMLElement, iconName: string): void {
@@ -2274,6 +2795,48 @@ function databaseValueToText(
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function taskTextFromLine(line: string): string | undefined {
+  const match = line.match(/^\s*[-*]\s+\[[ xX]\]\s+(.+)$/);
+  if (!match) return undefined;
+  return (match[1] ?? "")
+    .replace(/(?:📅|due::?)\s*\d{4}-\d{2}-\d{2}/i, "")
+    .replace(/(?:✅|completion::?)\s*\d{4}-\d{2}-\d{2}/i, "")
+    .replace(/(?:project|项目)::?\s*(?:\[\[)?[^\]\n]+?(?:\]\])?\s*$/i, "")
+    .trim();
+}
+
+function taskDisplayText(text: string): string {
+  return text
+    .replace(/!\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/[*_`~]/g, "")
+    .trim();
+}
+
+function daysFromToday(dateText: string): number {
+  const target = new Date(`${dateText}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function insertUnderHeading(content: string, heading: string, entry: string): string {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const normalizedEntry = entry.replace(/\r?\n/g, eol);
+  const lines = content.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => line.trim() === heading);
+  if (headingIndex < 0) {
+    const prefix = content.endsWith(eol) ? "" : eol;
+    return `${content}${prefix}${eol}${heading}${eol}${eol}${normalizedEntry}${eol}`;
+  }
+  let insertAt = headingIndex + 1;
+  if (lines[insertAt]?.trim() === "") insertAt += 1;
+  lines.splice(insertAt, 0, normalizedEntry, "");
+  return lines.join(eol);
 }
 
 function providerLabel(provider: VisualWorkspaceSettings["ai"]["provider"]): string {
